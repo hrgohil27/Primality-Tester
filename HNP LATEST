@@ -1,0 +1,100 @@
+CONTACT: HRGOHILMD@GMAIL.COM
+from time import time
+from random import randrange
+from math import log, sqrt, exp, pi
+try:
+    from gmpy2 import powmod
+except ImportError:
+    powmod = pow
+
+# Precomputed primes and deterministic Miller-Rabin bases
+SMALL_PRIMES = [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47]
+DET_BASES = {2**64: [2, 3, 5, 7, 11, 13, 17], 2**32: [2, 3, 5, 7], 10**9: [2, 7, 61]}
+
+def miller_rabin(n, k=10):
+    """
+    Miller-Rabin primality test with deterministic bases up to 2^64, probabilistic beyond.
+    """
+    if n < 49: return n in SMALL_PRIMES
+    if any(not n % p for p in SMALL_PRIMES): return False
+    logn = n.bit_length()
+    for limit, bases in DET_BASES.items():
+        if n < limit:
+            r, d = 0, n - 1
+            while not d % 2: r, d = r + 1, d //= 2
+            for a in bases:
+                x = powmod(a, d, n)
+                if x == 1 or x == n - 1: continue
+                for _ in range(r - 1):
+                    x = powmod(x, 2, n)
+                    if x == n - 1: break
+                else: return False
+            return True
+    r, d = 0, n - 1
+    while not d % 2: r, d = r + 1, d //= 2
+    k += logn // 512  # Adaptive k for large numbers
+    for i in range(k):
+        a = SMALL_PRIMES[i] if i < len(SMALL_PRIMES) else randrange(3, min(n - 1, 2**63), 2)
+        x = powmod(a, d, n)
+        if x == 1 or x == n - 1: continue
+        for _ in range(r - 1):
+            x = powmod(x, 2, n)
+            if x == n - 1: break
+        else: return False
+    return True
+
+def hnp(n):
+    """
+    Core primality test function for general numbers.
+    """
+    logn = n.bit_length()
+    if n < 2**16: return n in SMALL_PRIMES or (n > 1 and all(n % d for d in range(3, int(n**.5) + 1, 2)))
+    if logn > 1024 and any(not n % p for p in (53, 59, 61, 67)): return False
+    return miller_rabin(n)
+
+def twin_helix_predict(n):
+    """
+    Refined HNP pre-filter for twin primes n, n+2.
+    Optimized for speed with reduced terms and sharper threshold.
+    """
+    if n < 3 or n % 2 == 0: return False
+    logn = log(n + 1)
+    cap = min(max(logn**2, 7), 500)  # Cap at 500 for efficiency
+    primes = [p for p in SMALL_PRIMES if p <= cap] + [p for p in range(47, int(cap) + 1, 2) if all(p % q for q in SMALL_PRIMES[:5])]
+    if len(primes) > 200: primes = primes[:200]  # Limit to 200 terms
+    # Compute helical sums for n and n+2
+    i_h_n = sum((log(p)**2) * exp(1j * (-log(p)/logn + p*log(logn)/(logn**2))) for p in primes)
+    i_h_n2 = sum((log(p)**2) * exp(1j * (-log(p)/log(n+2) + p*log(log(n+2))/(log(n+2)**2))) for p in primes)
+    mag_n, mag_n2 = abs(i_h_n), abs(i_h_n2)
+    # Refined threshold
+    threshold = sqrt(cap / log(cap + 1)) * log(logn + 1) * 0.85
+    return mag_n > threshold and mag_n2 > threshold
+
+def find_largest_twin_primes(start_exp, max_exp, base=1, max_time=60):
+    """
+    Search for the largest twin prime pair of form base * 2^exp ± 1 within time limit.
+    """
+    largest_pair = None
+    s = time()
+    step = 2  # Check every other exponent
+    for exp in range(max_exp - (max_exp % step), start_exp - 1, -step):
+        if (time() - s) > max_time: break
+        p1 = base * (2**exp) - 1
+        p2 = base * (2**exp) + 1
+        if twin_helix_predict(p1):  # Pre-filter
+            if hnp(p1) and hnp(p2):  # Full primality test
+                largest_pair = (p1, p2)
+                print(f"Found twin primes: {p1}, {p2}, Digits: {len(str(p1))}, Time: {(time() - s) * 1000:.2f} ms")
+                break  # Stop at largest found
+    return largest_pair, (time() - s) * 1000
+
+if __name__ == "__main__":
+    print("Searching for Largest Twin Primes with Refined HNP:")
+    start_exp = 1000   # ~300 digits
+    max_exp = 10000    # ~3000 digits
+    pair, ms = find_largest_twin_primes(start_exp, max_exp, base=1, max_time=60)
+    if pair:
+        p, q = pair
+        print(f"Largest found: {p}, {q}, Digits: {len(str(p))}, Time: {ms:.2f} ms")
+    else:
+        print(f"No twin primes found within time limit, Time: {ms:.2f} ms")

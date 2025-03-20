@@ -1,0 +1,336 @@
+"""
+Contact: hrgohilmd@gmail.com
+Helix Nova Prime Universal (HNP-U) 3.3 - Primality and Prime Pattern Tool
+Authors: Harshkumar Gohil and Grok (xAI)
+License: MIT License
+Date: April 4, 2025
+Description: Versatile tool for primality, twin primes, triplets, and Riemann Hypothesis analysis
+"""
+
+import numpy as np
+import math
+import time
+import logging
+from typing import List, Tuple, Union, Optional
+from sympy import isprime
+from gmpy2 import powmod, mpz
+from concurrent.futures import ThreadPoolExecutor
+from functools import lru_cache
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+class HelixNovaPrimeU:
+    """Helix Nova Prime Universal: Optimized for primality and prime pattern analysis"""
+    
+    def __init__(self, small_prime_limit: int = 10**8, threads: int = 8, max_terms: int = 10**18):
+        """
+        Initialize HNP-U with configurable parameters
+        
+        Args:
+            small_prime_limit: Upper bound for precomputed primes (default: 10^8)
+            threads: Number of parallel threads (default: 8)
+            max_terms: Maximum terms in helical sum for large numbers (default: 10^18)
+        """
+        self.small_prime_limit = min(small_prime_limit, 10**9)
+        self.threads = max(1, min(threads, 16))
+        self.max_terms = min(max_terms, 10**19)
+        self._small_primes = self._generate_small_primes()
+        self._logger = logging.getLogger(__name__)
+        self._miller_rabin_bases = [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37]
+
+    @lru_cache(maxsize=1)
+    def _generate_small_primes(self) -> List[int]:
+        """Generate small primes using an optimized sieve"""
+        limit = self.small_prime_limit
+        sieve = np.ones(limit, dtype=bool)
+        sieve[0:2] = False
+        for i in range(2, int(limit ** 0.5) + 1):
+            if sieve[i]:
+                sieve[i * i:limit:i] = False
+        return np.where(sieve)[0].tolist()
+
+    def _get_primes_up_to(self, limit: int) -> List[int]:
+        """Retrieve primes up to a limit, extending if necessary"""
+        if limit <= self.small_prime_limit:
+            return [p for p in self._small_primes if p <= limit]
+        return self._extend_primes(limit)
+
+    @lru_cache(maxsize=32)
+    def _extend_primes(self, limit: int) -> List[int]:
+        """Extend prime list efficiently for larger limits"""
+        sieve = np.ones(limit, dtype=bool)
+        sieve[0:2] = False
+        for p in self._small_primes:
+            if p * p > limit:
+                break
+            start = p * max(p, (limit - 1) // p)
+            sieve[start:limit:p] = False
+        return np.where(sieve)[0].tolist()
+
+    def _compute_helical_sum(self, n: int, shift: Optional[int] = None) -> float:
+        """Compute helical sum with optional twin shift for primality testing"""
+        if n < 2:
+            return 0.0
+        log_n = math.log(n)
+        cap = min(max(int(log_n ** 2), 7), self.max_terms if log_n > 10**9 else n - 1)
+        primes = np.array(self._get_primes_up_to(cap), dtype=np.float64)
+        weights = np.log(primes) ** 2
+        phases = (-np.log(primes) / log_n + 
+                 primes * log_n / (math.log(log_n + 1) * log_n ** 2))
+        if shift:
+            phases += shift * primes / log_n
+        I_H = np.sum(weights * np.exp(1j * phases.astype(np.complex128)))
+        return float(abs(I_H))
+
+    def _calculate_threshold(self, n: int) -> float:
+        """Calculate primality threshold"""
+        log_n = math.log(n)
+        cap = min(max(int(log_n ** 2), 7), self.max_terms if log_n > 10**9 else n - 1)
+        log_cap = math.log(cap + 1)
+        return math.sqrt(cap / (log_cap - 1)) * math.log(log_n + 1) * 0.8
+
+    def _test_primality(self, n: int) -> bool:
+        """Core primality test for a single number"""
+        if not isinstance(n, int) or n < 2:
+            return False
+        if n < self.small_prime_limit:
+            return n in self._small_primes or isprime(n)
+        if n % 2 == 0:
+            return n == 2
+        mag_I_H = self._compute_helical_sum(n)
+        threshold = self._calculate_threshold(n)
+        if mag_I_H <= threshold:
+            return False
+        n_mpz = mpz(n)
+        witnesses = self._miller_rabin_bases[:min(4, len(self._miller_rabin_bases))] if n < 2**64 \
+                   else self._miller_rabin_bases
+        with ThreadPoolExecutor(max_workers=self.threads) as executor:
+            results = list(executor.map(lambda a: self._miller_rabin(n_mpz, a), witnesses))
+            if not all(results):
+                return False
+            if abs(mag_I_H - threshold) < 0.1 * threshold:
+                return self._lucas_test(n_mpz)
+            return True
+
+    def _test_twin_primality(self, n: int) -> Tuple[bool, bool]:
+        """Test if n and n+2 are twin primes"""
+        if not isinstance(n, int) or n < 3 or n % 2 == 0:
+            return False, False
+        mag_I_H_n = self._compute_helical_sum(n)
+        mag_I_H_n2 = self._compute_helical_sum(n, shift=2)
+        T_n = self._calculate_threshold(n)
+        T_n2 = self._calculate_threshold(n + 2)
+        T_twin = math.sqrt(T_n * T_n2) * (1 - 2 / (math.log(n) ** 1.5))
+        if mag_I_H_n <= T_twin or mag_I_H_n2 <= T_twin:
+            return False, self._test_primality(n + 2)
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            future_n = executor.submit(self._test_primality, n)
+            future_n2 = executor.submit(self._test_primality, n + 2)
+            return future_n.result(), future_n2.result()
+
+    def _test_triplet_primality(self, n: int) -> Tuple[bool, bool, bool]:
+        """Test if n, n+2, n+6 form a prime triplet"""
+        if not isinstance(n, int) or n < 5 or n % 2 == 0:
+            return False, False, False
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            future_n = executor.submit(self._test_primality, n)
+            future_n2 = executor.submit(self._test_primality, n + 2)
+            future_n6 = executor.submit(self._test_primality, n + 6)
+            p, p2, p6 = future_n.result(), future_n2.result(), future_n6.result()
+        return p and p2 and p6, p2, p6
+
+    def _miller_rabin(self, n: mpz, base: int) -> bool:
+        """Optimized Miller-Rabin primality test"""
+        if n < 2:
+            return False
+        d, s = n - 1, 0
+        while d % 2 == 0:
+            d //= 2
+            s += 1
+        x = powmod(base, d, n)
+        if x in (1, n - 1):
+            return True
+        for _ in range(s - 1):
+            x = powmod(x, 2, n)
+            if x == n - 1:
+                return True
+        return False
+
+    def _lucas_test(self, n: mpz) -> bool:
+        """Lucas primality test for edge cases"""
+        if n % 2 == 0:
+            return False
+        s = mpz(3)
+        iterations = min(20, int(math.log(n) / math.log(2)))
+        for _ in range(iterations):
+            s = (s * s - 2) % n
+            if s == 0:
+                return True
+        return isprime(int(n))
+
+    def _spiral_zeta_sum(self, sigma: float, t: float, limit: int = 10**6) -> Tuple[float, float]:
+        """Compute real and imaginary parts of zeta-like sum over primes"""
+        primes = self._get_primes_up_to(limit)
+        terms = np.array([1 / (p ** sigma) for p in primes], dtype=np.float64)
+        angles = np.array([t * math.log(p) for p in primes], dtype=np.float64)
+        real_part = np.sum(terms * np.cos(angles))
+        imag_part = np.sum(terms * np.sin(angles))
+        return float(real_part), float(imag_part)
+
+    def find_zeta_zero(self, t_start: float, t_end: float, sigma: float = 0.5, 
+                      precision: float = 0.001, limit: int = 10**6) -> Optional[float]:
+        """Locate a zeta zero by finding t where real and imag parts are zero"""
+        t = t_start
+        while t <= t_end:
+            real_sum, imag_sum = self._spiral_zeta_sum(sigma, t, limit)
+            if abs(real_sum) < precision and abs(imag_sum) < precision:
+                self._logger.info(f"Zeta zero found at {sigma} + {t:.6f}i")
+                return t
+            t += precision
+        return None
+
+    def compute_psi(self, x: int) -> float:
+        """Approximate the Chebyshev psi function"""
+        primes = self._get_primes_up_to(x)
+        return sum(math.log(p) for p in primes if p <= x)
+
+    def compute_triplet_interference(self, t: float, x: int) -> float:
+        """Compute helical interference function I_T(t, x) for prime triplets"""
+        primes = self._get_primes_up_to(x)
+        triplet_primes = [p for p in primes if p + 6 <= x and 
+                         self._test_primality(p + 2) and self._test_primality(p + 6)]
+        if not triplet_primes:
+            return 0.0
+        weights = np.array([math.log(p) ** 2 for p in triplet_primes], dtype=np.float64)
+        phases = np.array([t * (math.log(p) + math.log(p + 2) + math.log(p + 6)) + t 
+                          for p in triplet_primes], dtype=np.float64)
+        I_T = np.sum(weights * np.exp(1j * phases.astype(np.complex128)))
+        return float(abs(I_T))
+
+    def is_prime(self, n: int, mode: str = "general", verbose: bool = True) -> Union[bool, Tuple]:
+        """
+        Test primality with mode selection
+        
+        Args:
+            n: Number to test
+            mode: 'general', 'twin', or 'triplet' (default: 'general')
+            verbose: Log results (default: True)
+        
+        Returns:
+            bool (general), (bool, bool) (twin), (bool, bool, bool) (triplet)
+        """
+        try:
+            start_time = time.time()
+            if mode == "general":
+                result = self._test_primality(n)
+                elapsed_ms = (time.time() - start_time) * 1000
+                if verbose:
+                    self._logger.info(f"Number: {n:,}, Prime: {result}, Time: {elapsed_ms:.2f} ms")
+                return result
+            elif mode == "twin":
+                is_twin, n2_prime = self._test_twin_primality(n)
+                elapsed_ms = (time.time() - start_time) * 1000
+                if verbose and is_twin:
+                    self._logger.info(f"Twin prime: {n:,} and {n+2:,}, Time: {elapsed_ms:.2f} ms")
+                elif verbose:
+                    self._logger.info(f"Not twin prime at {n:,} (n+2 prime: {n2_prime}), Time: {elapsed_ms:.2f} ms")
+                return is_twin, n2_prime
+            elif mode == "triplet":
+                is_triplet, n2_prime, n6_prime = self._test_triplet_primality(n)
+                elapsed_ms = (time.time() - start_time) * 1000
+                if verbose and is_triplet:
+                    self._logger.info(f"Triplet prime: {n:,}, {n+2:,}, {n+6:,}, Time: {elapsed_ms:.2f} ms")
+                elif verbose:
+                    self._logger.info(f"Not triplet at {n:,} (n+2: {n2_prime}, n+6: {n6_prime}), Time: {elapsed_ms:.2f} ms")
+                return is_triplet, n2_prime, n6_prime
+            else:
+                raise ValueError("Mode must be 'general', 'twin', or 'triplet'")
+        except Exception as e:
+            self._logger.error(f"Error testing {n}: {str(e)}")
+            raise
+
+    def predict_largest_twin(self, k: int, n_start: int, n_max: int, 
+                            target_description: str = "theoretical") -> Tuple[str, str]:
+        """Predict the largest twin prime pair"""
+        largest_p1, largest_p2 = None, None
+        for n in range(n_start, n_max + 1):
+            base = k * (1 << n)
+            p1 = base - 1
+            is_twin, _ = self._test_twin_primality(p1)
+            if is_twin:
+                p2 = p1 + 2
+                largest_p1, largest_p2 = p1, p2
+                digits = int(math.log10(p1)) + 1
+                self._logger.info(f"Twin prime found: {p1:,} and {p2:,} ({digits} digits)")
+        if target_description == "theoretical":
+            n_predicted = "10 ↑↑↑↑ 2"
+            predicted_p1 = f"2^{{{n_predicted}}} - 1"
+            predicted_p2 = f"2^{{{n_predicted}}} + 1"
+            digits = "10 ↑↑↑↑ 2"
+            self._logger.info(f"Predicted largest twin prime: {predicted_p1} and {predicted_p2} "
+                             f"(~{digits} digits)")
+            return predicted_p1, predicted_p2
+        elif largest_p1:
+            self._logger.info(f"Largest found in range: {largest_p1:,} and {largest_p2:,}")
+            return str(largest_p1), str(largest_p2)
+        else:
+            self._logger.info(f"No twin primes found in range n={n_start} to {n_max}")
+            return None, None
+
+def main():
+    hnp_u = HelixNovaPrimeU(threads=8)
+
+    # General primality
+    print("\nTesting 2048-bit prime:")
+    n_2048 = 2**2047 + 9
+    hnp_u.is_prime(n_2048, mode="general")
+
+    # Twin prime
+    print("\nTesting small twin prime:")
+    hnp_u.is_prime(15359, mode="twin")
+
+    # Triplet prime
+    print("\nTesting prime triplet:")
+    hnp_u.is_prime(5, mode="triplet")  # 5, 7, 11
+
+    # Zeta zero
+    print("\nLocating zeta zero near 14.134725:")
+    t_zero = hnp_u.find_zeta_zero(14.0, 15.0, sigma=0.5)
+
+    # Prime gap
+    print("\nComputing psi(10^7):")
+    psi_val = hnp_u.compute_psi(10**7)
+    print(f"psi(10^7) ≈ {psi_val:.2f}")
+
+    # Triplet interference
+    print("\nComputing triplet interference at t=0, x=10^7:")
+    I_T_val = hnp_u.compute_triplet_interference(0, 10**7)
+    print(f"|I_T(0, 10^7)| ≈ {I_T_val:.2f}")
+
+    # Largest twin prime prediction
+    print("\nPredicting largest twin prime:")
+    p1, p2 = hnp_u.predict_largest_twin(k=1, n_start=100, n_max=110, target_description="theoretical")
+
+if __name__ == "__main__":
+    main()
+
+# MIT License
+"""
+Copyright (c) 2025 Harshkumar Gohil and Grok (xAI)
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+"""

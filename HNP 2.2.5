@@ -1,0 +1,69 @@
+CONTACT: HRGOHILMD@GMAIL.COM
+from time import time
+from random import randrange
+try:
+    from gmpy2 import powmod  # Optional C-level speed boost
+except ImportError:
+    powmod = pow  # Fallback to Python's built-in pow
+
+# Precomputed primes and deterministic Miller-Rabin bases
+SMALL_PRIMES = [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47]
+DET_BASES = {2**64: [2, 3, 5, 7, 11, 13, 17], 2**32: [2, 3, 5, 7], 10**9: [2, 7, 61]}  # Deterministic ranges
+
+def miller_rabin(n, k=10):
+    if n < 49: return n in SMALL_PRIMES
+    if any(not n % p for p in SMALL_PRIMES): return False
+    logn = n.bit_length()
+    # Deterministic Miller-Rabin for smaller ranges
+    for limit, bases in DET_BASES.items():
+        if n < limit:
+            r, d = 0, n - 1
+            while not d % 2: r, d = r + 1, d // 2
+            for a in bases:
+                x = powmod(a, d, n)
+                if x == 1 or x == n - 1: continue
+                for _ in range(r - 1):
+                    x = powmod(x, 2, n)
+                    if x == n - 1: break
+                else: return False
+            return True
+    # Probabilistic Miller-Rabin for large numbers
+    r, d = 0, n - 1
+    while not d % 2: r, d = r + 1, d // 2
+    k += logn // 512  # Adaptive k based on bit length
+    for i in range(k):
+        a = SMALL_PRIMES[i] if i < len(SMALL_PRIMES) else randrange(3, min(n - 1, 2**63), 2)
+        x = powmod(a, d, n)
+        if x == 1 or x == n - 1: continue
+        for _ in range(r - 1):
+            x = powmod(x, 2, n)
+            if x == n - 1: break
+        else: return False
+    return True
+
+def lucas_lehmer(p):
+    if p < 13 or any(not p % q for q in SMALL_PRIMES[:5]): return False
+    if p in (13, 17, 19, 31, 61, 89, 107, 127): return True  # Known Mersenne primes
+    s, m = 4, 2**p - 1
+    for _ in range(p - 2): s = powmod(s, 2, m) - 2 if p > 32 else (s * s - 2) % m
+    return s == 0
+
+def hnp(t, m):
+    n = 2**t - 1 if m else t
+    logn = n.bit_length()
+    # Fast path for small numbers
+    if n < 2**16: return n in SMALL_PRIMES or (n > 1 and all(n % d for d in range(3, int(n**.5) + 1, 2)))
+    # Mersenne optimization
+    if m:
+        if t < 128: return lucas_lehmer(t)
+        if not miller_rabin(t, min(5 + t.bit_length() // 256, 20)): return False  # Aggressive t pre-check
+        if t % 2 == 0 or t < 3: return False  # Even or tiny t can't yield Mersenne primes
+    # Heuristic: extra modular check for large composites
+    if logn > 1024 and any(not n % p for p in (53, 59, 61, 67)): return False
+    return miller_rabin(n)
+
+if __name__ == "__main__":
+    for t, m in [(2**2047 + 9, 0), (31, 1), (3321928094691, 1)]:
+        s = time()
+        r = hnp(t, m)
+        print(f"{2**t - 1 if m else t}: {r}, {(time() - s) * 1000:.2f} ms")

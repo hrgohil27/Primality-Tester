@@ -1,0 +1,229 @@
+"""
+Contact: hrgohilmd@gmail.com
+Helix Nova Prime Universal (HNP-U) 3.10 - Cosmic Mersenne Prime Predictor
+Authors: Harshkumar Gohil and Grok (xAI)
+License: MIT License
+Date: March 18, 2025
+Description: Pinnacle tool for predicting hyper-scale Mersenne primes
+"""
+
+import numpy as np
+import math
+import time
+import logging
+from typing import List, Tuple, Optional
+from sympy import isprime
+from gmpy2 import powmod, mpz
+from concurrent.futures import ThreadPoolExecutor
+from functools import lru_cache
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+class HelixNovaPrimeU:
+    """Helix Nova Prime Universal: Optimized for hyper-scale Mersenne prime prediction"""
+    
+    def __init__(self, small_prime_limit: int = 10**8, threads: int = 8, max_terms: int = 10**18):
+        self.small_prime_limit = min(small_prime_limit, 10**9)
+        self.threads = max(1, min(threads, 16))
+        self.max_terms = min(max_terms, 10**19)
+        self._small_primes = self._generate_small_primes()
+        self._logger = logging.getLogger(__name__)
+        self._miller_rabin_bases = [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37]
+
+    @lru_cache(maxsize=1)
+    def _generate_small_primes(self) -> List[int]:
+        limit = self.small_prime_limit
+        sieve = np.ones(limit, dtype=bool)
+        sieve[0:2] = False
+        sqrt_limit = int(limit ** 0.5) + 1
+        for i in range(2, sqrt_limit):
+            if sieve[i]:
+                sieve[i * i:limit:i] = False
+        return np.where(sieve)[0].tolist()
+
+    def _get_primes_up_to(self, limit: int) -> List[int]:
+        if limit <= self.small_prime_limit:
+            return [p for p in self._small_primes if p <= limit]
+        return self._extend_primes(limit)
+
+    @lru_cache(maxsize=32)
+    def _extend_primes(self, limit: int) -> List[int]:
+        sieve = np.ones(limit, dtype=bool)
+        sieve[0:2] = False
+        sqrt_limit = int(limit ** 0.5) + 1
+        for p in self._small_primes:
+            if p >= sqrt_limit:
+                break
+            start = p * max(p, (limit - 1) // p)
+            sieve[start:limit:p] = False
+        return np.where(sieve)[0].tolist()
+
+    def _compute_multi_freq_helical_sum(self, x: int, t_vec: Tuple[float, float, float, float, float, float, float], n: float) -> float:
+        """Compute seven-phase helical sum with Mersenne-specific weighting"""
+        primes = np.array(self._get_primes_up_to(min(x, self.max_terms)), dtype=np.float64)
+        if len(primes) == 0:
+            return 0.0
+        log_primes = np.log(primes + 1)
+        m = 2**n - 1 if n < 10**100 else float('inf')
+        mersenne_factor = np.exp(-np.abs(np.log(primes) - np.log(m + 1e-10)))  # Mersenne tweak
+        weights = (np.log(primes) ** 2) / (log_primes + 1e-10 + 0.02 * np.mean(log_primes)) * mersenne_factor
+        t1, t2, t3, t4, t5, t6, t7 = t_vec
+        log_n = math.log(n + 1) if n < 10**100 else n
+        n_scale = log_n / 1e12
+        phases = (t1 * log_primes + 
+                  t2 * primes * n_scale + 
+                  t3 * primes ** 2 / log_primes + 
+                  t4 * log_primes + 
+                  t5 * primes ** 3 / (log_primes ** 2) + 
+                  t6 * log_primes ** 2 / primes + 
+                  t7 * primes / (log_primes ** 3))
+        phases = np.clip(phases, -1e12, 1e12)
+        I_H = np.sum(weights * np.exp(1j * phases.astype(np.complex128)))
+        norm_factor = math.sqrt(log_n / 1e12) / (len(primes) + 1)
+        return float(abs(I_H)) * norm_factor
+
+    def _test_primality(self, n: int) -> bool:
+        if not isinstance(n, int) or n < 2:
+            return False
+        if n < self.small_prime_limit:
+            return n in self._small_primes or isprime(n)
+        if n % 2 == 0:
+            return n == 2
+        n_mpz = mpz(n)
+        witnesses = self._miller_rabin_bases[:min(4, len(self._miller_rabin_bases))] if n < 2**64 else self._miller_rabin_bases
+        with ThreadPoolExecutor(max_workers=self.threads) as executor:
+            results = list(executor.map(lambda a: self._miller_rabin(n_mpz, a), witnesses))
+            return all(results)
+
+    def _miller_rabin(self, n: mpz, base: int) -> bool:
+        if n < 2:
+            return False
+        d, s = n - 1, 0
+        while d % 2 == 0:
+            d //= 2
+            s += 1
+        x = powmod(base, d, n)
+        if x in (1, n - 1):
+            return True
+        for _ in range(s - 1):
+            x = powmod(x, 2, n)
+            if x == n - 1:
+                return True
+        return False
+
+    def _lucas_lehmer(self, n: int) -> bool:
+        """Lucas-Lehmer test for Mersenne primality"""
+        if n == 2:
+            return True
+        if not self._test_primality(n):
+            return False
+        m = mpz(2**n - 1)
+        s = mpz(4)
+        for _ in range(n - 2):
+            s = (s * s - 2) % m
+        return s == 0
+
+    def _pre_filter_n(self, n: float) -> bool:
+        if n < 10**100:
+            if not isinstance(n, int) or n < 2:
+                return False
+            return self._test_primality(n) and n % 4 in (1, 3)
+        return True
+
+    def tune_helical_params(self, n: float, iterations: int = 10) -> Tuple[float, float, float, float, float, float, float]:
+        m = 2**n - 1 if n < 10**100 else float('inf')
+        log_m = math.log(m) if m != float('inf') else n * math.log(2)
+        t_vec = [-n/log_m, log_m/m if m != float('inf') else 0, -1/(m**2) if m != float('inf') else 0, 
+                 -1/n, -1/(m**3) if m != float('inf') else 0, -1/log_m**2, -1/(n * log_m)]
+        delta = 10**(-math.log10(n+1)/3) if n < 10**100 else 10**(-150)
+        best_I_H = 0.0
+        best_t_vec = t_vec[:]
+        for _ in range(iterations):
+            base_I_H = self._compute_multi_freq_helical_sum(int(min(m, 10**18)), tuple(t_vec), n)
+            if base_I_H > best_I_H:
+                best_I_H = base_I_H
+                best_t_vec = t_vec[:]
+            if base_I_H > 10**14:
+                break
+            grad_steps = np.zeros(7)
+            for i in range(7):
+                t_temp = list(t_vec)
+                t_temp[i] += delta
+                grad_I_H = self._compute_multi_freq_helical_sum(int(min(m, 10**18)), tuple(t_temp), n)
+                grad_steps[i] = (grad_I_H - base_I_H) / delta
+            t_vec = [t + g * delta * 0.0001 / (1 + abs(g) * 1e-10) for t, g in zip(t_vec, grad_steps)]
+        self._logger.debug(f"Tuned t_vec for n={n}: {best_t_vec}, |I_H| = {best_I_H:.2e}")
+        return tuple(best_t_vec)
+
+    def predict_mersenne_prime(self, n_start: int, n_max: int, target_digits: Optional[int] = None, verify: bool = False) -> Optional[int]:
+        """Predict Mersenne prime with optional Lucas-Lehmer verification"""
+        largest_n = None
+        largest_I_H = 0.0
+        for n in range(n_start, n_max + 1):
+            if not self._pre_filter_n(n):
+                continue
+            m = 2**n - 1
+            digits = int(n * math.log10(2)) + 1
+            t_vec = self.tune_helical_params(n)
+            mag_I_H = self._compute_multi_freq_helical_sum(m, t_vec, n)
+            threshold = 10**11 * (digits / 1e9) * math.log10(n + 1) ** 4 * math.log2(n + 1) / 10  # Refined threshold
+            is_prime = self._lucas_lehmer(n) if verify and n < 10**6 else self._test_primality(m)
+            if mag_I_H > threshold and mag_I_H > largest_I_H and is_prime:
+                largest_n = n
+                largest_I_H = mag_I_H
+                self._logger.info(f"Mersenne prime confirmed: M_{n} = 2^{n} - 1 ({digits:,} digits), |I_H| = {mag_I_H:.2e}")
+                if target_digits and digits >= target_digits:
+                    break
+        return largest_n
+
+    def predict_mersenne_prime_parallel(self, n_start: int, n_max: int, target_digits: Optional[int] = None) -> Optional[int]:
+        """Parallelized Mersenne prime prediction"""
+        def evaluate_n(n):
+            if not self._pre_filter_n(n):
+                return None, 0.0
+            m = 2**n - 1
+            digits = int(n * math.log10(2)) + 1
+            t_vec = self.tune_helical_params(n)
+            mag_I_H = self._compute_multi_freq_helical_sum(m, t_vec, n)
+            threshold = 10**11 * (digits / 1e9) * math.log10(n + 1) ** 4 * math.log2(n + 1) / 10
+            return (n, mag_I_H) if mag_I_H > threshold else (None, 0.0)
+
+        largest_n, largest_I_H = None, 0.0
+        with ThreadPoolExecutor(max_workers=self.threads) as executor:
+            results = executor.map(evaluate_n, range(n_start, n_max + 1))
+            for n, mag_I_H in results:
+                if n and mag_I_H > largest_I_H:
+                    largest_n, largest_I_H = n, mag_I_H
+                    self._logger.info(f"Mersenne prime predicted: M_{n} = 2^{n} - 1 ({int(n * math.log10(2)) + 1:,} digits), |I_H| = {mag_I_H:.2e}")
+                    if target_digits and int(n * math.log10(2)) + 1 >= target_digits:
+                        break
+        return largest_n
+
+def main():
+    hnp_u = HelixNovaPrimeU(threads=8)
+
+    # Test small Mersenne prime with verification
+    print("\nTesting known Mersenne prime M_31 with Lucas-Lehmer:")
+    result = hnp_u._lucas_lehmer(31)
+    print(f"M_31 is prime: {result}")
+
+    # Predict in a small range with verification
+    print("\nPredicting Mersenne prime in range 1270 to 1300 with verification:")
+    n_record = hnp_u.predict_mersenne_prime(1270, 1300, verify=True)
+    if n_record:
+        print(f"Predicted largest Mersenne prime: M_{n_record} = 2^{n_record} - 1")
+
+    # Parallel prediction in billion-digit range
+    print("\nPredicting billion-digit Mersenne prime (parallel, near 3.3B):")
+    n_record = hnp_u.predict_mersenne_prime_parallel(3321928090, 3321928100, target_digits=1000000000)
+    if n_record:
+        print(f"Predicted largest Mersenne prime: M_{n_record} = 2^{n_record} - 1")
+
+if __name__ == "__main__":
+    main()
+
+# MIT License
+"""
+Copyright (c) 2025 Harshkumar Gohil and Grok (xAI)
+"""

@@ -1,0 +1,31 @@
+CONTACT: HRGOHILMD@GMAIL.COM
+# Helix Nova Prime 2.6 - Nano
+# Authors: Harshkumar Gohil and Grok (xAI) - March 19, 2025 - MIT License: Copyright (c) 2025 Harshkumar Gohil and Grok (xAI). Free to use, modify, distribute with this notice. No warranties.
+
+P=[2,3,5,7,11]
+def hnp(n,m=0):
+ if n<25:
+  for p in P:
+   if p*p>n:return 1
+   if n%p==0:return n==p
+ l=n if m else int(n**.5);k=min(5,int(l**.1))
+ if m:
+  I=sum((1-(((1<<n)-1)%p)/p)*(5-i%5)for i,p in enumerate(P[:k]))
+  T=(n**.2*k)**.5
+ else:
+  I=sum((5-i%5)*(P[i]%16)/16 for i in range(k))
+  T=n**.2*(1-1/n**.1)
+ if I<=T:return 0
+ d,s=n-1,0
+ while d%2==0:d//=2;s+=1
+ x=pow(2,d,n)
+ if x in(1,n-1):return 1
+ for _ in range(s-1):
+  x=(x*x)%n
+  if x==n-1:return 1
+ return 0
+
+if __name__=="__main__":
+ import time
+ for t,m in[(2**2047+9,0),(31,1),(3321928094691,1)]:
+  s=time.time();r=hnp(t,m);print(f"Number: {2**t-1 if m else t}, Prime: {r}, Time: {(time.time()-s)*1000:.2f} ms")
